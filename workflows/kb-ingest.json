@@ -1,0 +1,212 @@
+{
+  "id": "supportBotKbIngest",
+  "name": "Support Bot — KB Ingest",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "nodes": [
+    {
+      "id": "k0",
+      "name": "Run manually",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "k1",
+      "name": "POST /kb-ingest",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.2,
+      "position": [
+        0,
+        200
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "kb-ingest",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "webhookId": "kb-ingest"
+    },
+    {
+      "id": "k2",
+      "name": "Read KB files",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1.1,
+      "position": [
+        240,
+        100
+      ],
+      "parameters": {
+        "operation": "read",
+        "fileSelector": "/data/kb/*.md",
+        "options": {}
+      }
+    },
+    {
+      "id": "k3",
+      "name": "Chunk by heading",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        100
+      ],
+      "parameters": {
+        "jsCode": "// One item per Markdown file -> one item per \"##\" section.\nconst MAX_CHARS = 1200;\nconst out = [];\nconst items = $input.all();\nfor (let i = 0; i < items.length; i++) {\n  const bin = items[i].binary?.data;\n  if (!bin) continue;\n  const source = bin.fileName;\n  if (!source.endsWith('.md') || source.toLowerCase() === 'readme.md') continue;\n  const text = (await this.helpers.getBinaryDataBuffer(i, 'data')).toString('utf8');\n  const title = (text.match(/^#\\s+(.+)$/m) || [, source])[1].trim();\n  for (const section of text.split(/^##\\s+/m).slice(1)) {\n    const [headLine, ...body] = section.split('\\n');\n    const heading = headLine.trim();\n    let content = body.join('\\n').trim();\n    if (!content) continue;\n    if (content.length > MAX_CHARS) content = content.slice(0, MAX_CHARS);\n    out.push({ json: { source, heading: `${title} › ${heading}`, content } });\n  }\n}\nif (!out.length) throw new Error('No sections found in /data/kb');\nreturn out;"
+      }
+    },
+    {
+      "id": "k4",
+      "name": "Embed chunks (Gemini)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        720,
+        100
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googlePalmApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'models/gemini-embedding-001', content: { parts: [{ text: $json.heading + '\\n' + $json.content }] }, taskType: 'RETRIEVAL_DOCUMENT', title: $json.heading, outputDimensionality: 768 }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          },
+          "batching": {
+            "batch": {
+              "batchSize": 5,
+              "batchInterval": 1500
+            }
+          }
+        }
+      },
+      "credentials": {
+        "googlePalmApi": {
+          "id": "7iuzII8CEOhEnSXk",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "k5",
+      "name": "Build rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        100
+      ],
+      "parameters": {
+        "jsCode": "const b64 = (o) => Buffer.from(JSON.stringify(o), 'utf8').toString('base64');\n// Pair each chunk with its embedding (same order). A failed embedding is kept\n// as null: the chunk is still searchable by keywords.\nconst chunks = $('Chunk by heading').all();\nconst embeds = $input.all();\nlet failed = 0;\nconst rows = chunks.map((c, i) => {\n  const r = embeds[i]?.json;\n  const values = r?.statusCode === 200 ? r.body?.embedding?.values : null;\n  if (!values) failed++;\n  return { ...c.json, embedding: values ? JSON.stringify(values) : null };\n});\nreturn [{ json: { b64: b64(rows), total: rows.length, failed_embeddings: failed } }];"
+      }
+    },
+    {
+      "id": "k6",
+      "name": "Replace KB in Postgres",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "position": [
+        1200,
+        100
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH p AS (SELECT convert_from(decode($1, 'base64'), 'UTF8')::jsonb AS j),\ndel AS (DELETE FROM bot.kb_chunks),\nins AS (\n  INSERT INTO bot.kb_chunks (source, heading, content, embedding)\n  SELECT e->>'source', e->>'heading', e->>'content',\n         CASE WHEN e->>'embedding' IS NULL THEN NULL ELSE (e->>'embedding')::vector END\n  FROM p, jsonb_array_elements(p.j) AS e\n  RETURNING embedding\n)\nSELECT count(*) AS chunks, count(embedding) AS with_embedding FROM ins;",
+        "options": {
+          "queryReplacement": "={{ $json.b64 }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "pgSupportBot0001",
+          "name": "Postgres support-bot"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Read KB files": {
+      "main": [
+        [
+          {
+            "node": "Chunk by heading",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chunk by heading": {
+      "main": [
+        [
+          {
+            "node": "Embed chunks (Gemini)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embed chunks (Gemini)": {
+      "main": [
+        [
+          {
+            "node": "Build rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build rows": {
+      "main": [
+        [
+          {
+            "node": "Replace KB in Postgres",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run manually": {
+      "main": [
+        [
+          {
+            "node": "Read KB files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "POST /kb-ingest": {
+      "main": [
+        [
+          {
+            "node": "Read KB files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Soporte Tienda Nexo — demo</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --panel: #ffffff; --text: #1b1f24; --muted: #5f6b7a; --border: #e2e5ea;
+    --accent: #2f6fde; --accent-text: #ffffff; --bot: #eef1f5; --warn-bg: #fff4e0; --warn: #8a5300;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0f1216; --panel: #171b21; --text: #e6e9ee; --muted: #98a2b0; --border: #2a3039;
+            --accent: #5b8ff0; --accent-text: #0b0e12; --bot: #20262e; --warn-bg: #3a2c12; --warn: #f2c27a; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .app { max-width: 720px; margin: 0 auto; min-height: 100dvh; display: flex; flex-direction: column; padding: 16px; }
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 4px 2px 12px; }
+  header h1 { font-size: 18px; margin: 0; }
+  header small { color: var(--muted); }
+  .chat { flex: 1; background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+          padding: 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; min-height: 360px; }
+  .msg { max-width: 85%; padding: 10px 14px; border-radius: 14px; white-space: pre-wrap; word-wrap: break-word; }
+  .user { align-self: flex-end; background: var(--accent); color: var(--accent-text); border-bottom-right-radius: 4px; }
+  .bot { align-self: flex-start; background: var(--bot); border-bottom-left-radius: 4px; }
+  .meta { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { font-size: 12px; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px; background: var(--panel); }
+  .handoff { font-size: 12px; color: var(--warn); background: var(--warn-bg); border-radius: 999px; padding: 2px 8px; }
+  .typing { color: var(--muted); font-style: italic; }
+  .suggest { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+  .suggest button { border: 1px solid var(--border); background: var(--panel); color: var(--text);
+                    border-radius: 999px; padding: 6px 12px; font: inherit; font-size: 13px; cursor: pointer; }
+  .suggest button:hover { border-color: var(--accent); }
+  form { display: flex; gap: 8px; }
+  input { flex: 1; min-width: 0; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--border);
+          background: var(--panel); color: var(--text); font: inherit; }
+  input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  form button { padding: 0 18px; border: 0; border-radius: 12px; background: var(--accent); color: var(--accent-text);
+                font: inherit; font-weight: 600; cursor: pointer; }
+  form button:disabled { opacity: .5; cursor: default; }
+  footer { color: var(--muted); font-size: 12px; text-align: center; padding-top: 10px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>Soporte · Tienda Nexo</h1>
+    <small>Demo · empresa y datos ficticios</small>
+  </header>
+
+  <div class="chat" id="chat" aria-live="polite">
+    <div class="msg bot">¡Hola! Soy el asistente de Tienda Nexo. Pregúntame por envíos, devoluciones, pagos, garantía o tu cuenta.</div>
+  </div>
+
+  <div class="suggest" id="suggest">
+    <button>¿Cuánto cuesta el envío a Chiriquí?</button>
+    <button>¿Cuántos días tengo para devolver algo?</button>
+    <button>Me cobraron dos veces el mismo pedido</button>
+    <button>Quiero hablar con un agente</button>
+  </div>
+
+  <form id="form" autocomplete="off">
+    <input id="input" maxlength="1000" placeholder="Escribe tu pregunta…" aria-label="Mensaje">
+    <button id="send" type="submit">Enviar</button>
+  </form>
+  <footer>RAG híbrido (palabras clave + embeddings) · n8n · Postgres/pgvector · Gemini</footer>
+</div>
+
+<script>
+  // Backend URL: ?api=https://... overrides the local default (used for the hosted demo).
+  const API = new URLSearchParams(location.search).get('api') || 'http://127.0.0.1:5678/webhook/chat';
+
+  let sessionId;
+  try { sessionId = sessionStorage.getItem('nexo-session'); } catch (e) {}
+  if (!sessionId) {
+    sessionId = 'web-' + crypto.randomUUID().slice(0, 18);
+    try { sessionStorage.setItem('nexo-session', sessionId); } catch (e) {}
+  }
+
+  const chat = document.getElementById('chat');
+  const form = document.getElementById('form');
+  const input = document.getElementById('input');
+  const send = document.getElementById('send');
+
+  function add(text, cls) {
+    const el = document.createElement('div');
+    el.className = 'msg ' + cls;
+    el.textContent = text;
+    chat.appendChild(el);
+    chat.scrollTop = chat.scrollHeight;
+    return el;
+  }
+
+  async function ask(text) {
+    text = text.trim();
+    if (!text) return;
+    add(text, 'user');
+    input.value = '';
+    send.disabled = true;
+    const pending = add('Escribiendo…', 'bot typing');
+    try {
+      const r = await fetch(API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId, message: text }),
+      });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const d = await r.json();
+      pending.className = 'msg bot';
+      pending.textContent = d.answer;
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      for (const s of d.sources || []) {
+        const c = document.createElement('span'); c.className = 'chip'; c.textContent = '📄 ' + s; meta.appendChild(c);
+      }
+      if (d.escalated) {
+        const h = document.createElement('span'); h.className = 'handoff';
+        h.textContent = '👤 Caso enviado a un agente' + (d.escalation_id ? ' #' + d.escalation_id : '');
+        meta.appendChild(h);
+      }
+      if (meta.children.length) pending.appendChild(meta);
+    } catch (e) {
+      pending.className = 'msg bot';
+      pending.textContent = 'No pude conectar con el servidor del bot. ¿Está encendido? (' + e.message + ')';
+    } finally {
+      send.disabled = false;
+      input.focus();
+      chat.scrollTop = chat.scrollHeight;
+    }
+  }
+
+  form.addEventListener('submit', (e) => { e.preventDefault(); ask(input.value); });
+  document.getElementById('suggest').addEventListener('click', (e) => {
+    if (e.target.tagName === 'BUTTON') ask(e.target.textContent);
+  });
+</script>
+</body>
+</html>
