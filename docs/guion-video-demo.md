@@ -24,6 +24,6 @@ Graba la pantalla con la Grabadora de Windows (Win + Alt + R) o con OBS. Ten el 
 > Stack: n8n · Postgres + pgvector (búsqueda híbrida) · Gemini · Docker.
 > Lo que NO automaticé: reembolsos y cambios en la cuenta; esos siempre los decide una persona.
 >
-> Código: github.com/jse-avl/… 
+> Código: github.com/jse-avl/support-bot
 >
 > #n8n #IA #RAG #Automatización #Python
