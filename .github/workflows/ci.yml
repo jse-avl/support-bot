@@ -1,0 +1,38 @@
+﻿name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Python syntax
+        run: python -m py_compile scripts/build_workflows.py evals/run_evals.py
+      - name: Workflow JSON is valid
+        run: |
+          for f in workflows/*.json; do python -m json.tool "$f" > /dev/null && echo "ok $f"; done
+      - name: Eval cases are valid JSONL
+        run: |
+          python - <<'PY'
+          import json
+          n = 0
+          for line in open("evals/cases.jsonl", encoding="utf-8"):
+              if line.strip():
+                  json.loads(line); n += 1
+          print(f"{n} eval cases OK")
+          PY
+      - name: docker-compose is valid
+        run: |
+          cp .env.example .env.ci
+          docker compose --env-file .env.ci config -q
+      - name: No secrets committed
+        run: |
+          ! git ls-files | grep -E '(^|/)\.env$'
+
