@@ -1,0 +1,35 @@
+﻿name: Evals
+
+# Runs the eval set against a deployed chat endpoint (not part of PR CI:
+# it calls a real model and is rate-limited on the free tier).
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: Chat endpoint URL (defaults to the EVAL_CHAT_URL repo variable)
+        required: false
+  schedule:
+    - cron: "0 12 * * 1"   # Mondays 12:00 UTC
+
+jobs:
+  evals:
+    runs-on: ubuntu-latest
+    env:
+      CHAT_URL: ${{ inputs.url || vars.EVAL_CHAT_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Skip if no endpoint is configured
+        if: env.CHAT_URL == ''
+        run: echo "No EVAL_CHAT_URL configured yet (see issue about the public demo); skipping." && exit 0
+      - name: Run evals
+        if: env.CHAT_URL != ''
+        run: python evals/run_evals.py --url "$CHAT_URL"
+      - name: Upload report
+        if: env.CHAT_URL != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report
+          path: evals/report.md

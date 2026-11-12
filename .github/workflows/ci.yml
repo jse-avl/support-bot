@@ -28,6 +28,11 @@ jobs:
                   json.loads(line); n += 1
           print(f"{n} eval cases OK")
           PY
+      - name: docker-compose is valid
+        run: |
+          cp .env.example .env.ci
+          docker compose --env-file .env.ci config -q
       - name: No secrets committed
         run: |
           ! git ls-files | grep -E '(^|/)\.env$'
+
